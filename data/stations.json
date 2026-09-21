@@ -1,0 +1,28 @@
+{
+  "stations": [
+    {
+      "id": 122,
+      "city": "Tustin",
+      "state": "CA",
+      "address": "2655 El Camino Real",
+      "lat": 33.728,
+      "lon": -117.796
+    },
+    {
+      "id": 454,
+      "city": "Irvine",
+      "state": "CA",
+      "address": "115 Technology Dr",
+      "lat": 33.66,
+      "lon": -117.745
+    },
+    {
+      "id": 1001,
+      "city": "Tustin",
+      "state": "CA",
+      "address": "2700 Park Ave",
+      "lat": 33.699,
+      "lon": -117.823
+    }
+  ]
+}

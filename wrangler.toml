@@ -1,0 +1,14 @@
+name = "gas-tracker"
+main = "worker/worker.js"
+compatibility_date = "2026-09-01"
+
+# 11:00 and 17:00 America/Los_Angeles. Cron is UTC-only, so both the PDT
+# (UTC-7) and PST (UTC-8) translations are registered; the scheduled handler
+# checks the real local hour and ignores the firing that is an hour off.
+[triggers]
+crons = ["0 18 * * *", "0 19 * * *", "0 0 * * *", "0 1 * * *"]
+
+[vars]
+GH_REPO = "nonnoob/gas-tracker"
+GH_BRANCH = "main"
+ALLOWED_ORIGIN = "https://nonnoob.github.io,http://localhost:8000,http://127.0.0.1:8000"
