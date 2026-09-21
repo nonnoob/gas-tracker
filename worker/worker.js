@@ -343,9 +343,14 @@ export default {
     // that lands on a real slot does anything.
     if (!SLOT_HOURS.includes(losAngelesHour(at))) return;
     ctx.waitUntil(
-      collect(env, at).then((result) => {
-        if (result.errors.length) console.error('collect errors', result.errors);
-      })
+      collect(env, at)
+        .then((result) => {
+          if (result.errors.length) console.error('collect errors', result.errors);
+          else console.log(`collected ${result.recorded} price(s) at ${stamp(at)}`);
+        })
+        // Without this the whole run fails silently — a missing GH_TOKEN throws
+        // inside ghRead and the tail log shows nothing to explain it.
+        .catch((err) => console.error('collect failed:', String(err && err.message || err)))
     );
   }
 };
