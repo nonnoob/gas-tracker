@@ -10,7 +10,7 @@ window.GAS_CONFIG = {
   // Local development points at `npx wrangler dev --port 8788`.
   WORKER: location.hostname === 'localhost' || location.hostname === '127.0.0.1'
     ? 'http://127.0.0.1:8788'
-    : 'https://gas-tracker.nonnoob.workers.dev',
+    : 'https://gas-tracker.jacec2096.workers.dev',
 
   // Slots the collector records, for the note under the history chart.
   SLOTS: '11:00 / 17:00 America/Los_Angeles'
