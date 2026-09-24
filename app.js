@@ -13,7 +13,8 @@ const state = {
   history: null,      // data/history.json
   fuel: null,
   days: 30,
-  selected: new Set()
+  selected: new Set(),
+  found: []           // last search results, kept so 关注 can send the full record
 };
 
 const $ = (id) => document.getElementById(id);
@@ -60,7 +61,10 @@ function colorOf(stationId) {
 
 async function loadLive() {
   const ids = state.stations.map((s) => s.id);
-  if (ids.length === 0) return;
+  if (ids.length === 0) {
+    $('live-cards').innerHTML = '<div class="empty">还没有关注的站。在下面搜邮编，点「关注」加一个。</div>';
+    return;
+  }
   $('live-cards').innerHTML = state.stations
     .map((s) => `<div class="card"><h3>${labelOf(s)}</h3><div class="sub">读取中…</div></div>`)
     .join('');
@@ -86,7 +90,7 @@ async function loadLive() {
     const entry = data.stations[String(s.id)] || {};
     if (entry.error) {
       return `<div class="card"><span class="swatch" style="background:${colorOf(s.id)}"></span>
-        <h3>${labelOf(s)}</h3><div class="sub">${s.address || ''}</div>
+        <button class="unfollow" data-id="${s.id}" title="取消关注">×</button><h3>${labelOf(s)}</h3><div class="sub">${s.address || ''}</div>
         <div class="err">读取失败：${entry.error}</div></div>`;
     }
     const rows = Object.entries(entry.prices || {}).sort().map(([fuel, price]) => {
@@ -96,7 +100,7 @@ async function loadLive() {
         ${best ? '<span class="cheapest">最低</span>' : ''}</div>`;
     }).join('') || '<div class="sub">暂无挂牌价</div>';
     return `<div class="card"><span class="swatch" style="background:${colorOf(s.id)}"></span>
-      <h3>${labelOf(s)}</h3><div class="sub">${s.address || ''}</div>${rows}</div>`;
+      <button class="unfollow" data-id="${s.id}" title="取消关注">×</button><h3>${labelOf(s)}</h3><div class="sub">${s.address || ''}</div>${rows}</div>`;
   }).join('');
 
   $('live-note').innerHTML =
@@ -104,7 +108,119 @@ async function loadLive() {
     `<span style="margin-left:8px">更新于 ${relative(data.at)}</span>`;
 }
 
+// --- following (edits data/stations.json through the Worker) ----------------
+
+const KEY_STORE = 'gas-tracker.collect-key';
+
+function storedKey() {
+  try { return localStorage.getItem(KEY_STORE) || ''; } catch (_) { return ''; }
+}
+
+function rememberKey(value) {
+  try {
+    if (value) localStorage.setItem(KEY_STORE, value);
+    else localStorage.removeItem(KEY_STORE);
+  } catch (_) {}
+}
+
+/** POST or DELETE /stations. Asks for the Worker's COLLECT_KEY once and keeps it. */
+async function editStations(method, { station, id }) {
+  let key = storedKey();
+  if (!key) {
+    key = (window.prompt('关注/取消关注会改动采集名单，需要 Worker 的 COLLECT_KEY：') || '').trim();
+    if (!key) throw new Error('已取消');
+  }
+  const resp = await fetch(
+    method === 'DELETE' ? `${WORKER}/stations?id=${encodeURIComponent(id)}` : `${WORKER}/stations`,
+    {
+      method,
+      headers: { 'content-type': 'application/json', 'x-collect-key': key },
+      body: method === 'POST' ? JSON.stringify(station) : undefined
+    }
+  );
+  if (resp.status === 403) {
+    rememberKey('');
+    throw new Error('密钥不对，再点一次重新输入');
+  }
+  if (!resp.ok) {
+    let detail = `${resp.status} ${resp.statusText}`;
+    try { detail = (await resp.json()).error || detail; } catch (_) {}
+    throw new Error(detail);
+  }
+  rememberKey(key);
+  const result = await resp.json();
+  state.stations = result.stations || [];
+  return result;
+}
+
+/** Redraw everything that depends on the tracked list. */
+function afterStationsChange() {
+  const series = (state.history && state.history.series) || {};
+  const tracked = new Set(state.stations.map((s) => String(s.id)));
+  for (const id of [...state.selected]) if (!tracked.has(id)) state.selected.delete(id);
+  if (state.selected.size === 0) {
+    state.stations.filter((s) => series[String(s.id)]).slice(0, 6)
+      .forEach((s) => state.selected.add(String(s.id)));
+  }
+  if (state.history) { drawChart(); drawLegend(); }
+  renderResults();
+  loadLive();
+}
+
+async function follow(id, button) {
+  const station = state.found.find((r) => String(r.id) === String(id));
+  if (!station) return;
+  button.disabled = true;
+  try {
+    const { distance_mi, ...record } = station;
+    await editStations('POST', { station: record });
+    toast(`已关注 ${labelOf(station)}，下一次采样开始记录`);
+    afterStationsChange();
+  } catch (err) {
+    toast(err.message);
+    button.disabled = false;
+  }
+}
+
+async function unfollow(id, button) {
+  const station = state.stations.find((s) => String(s.id) === String(id)) || { id };
+  if (!window.confirm(`取消关注 ${labelOf(station)}？已记录的历史会保留，只是不再采样。`)) return;
+  button.disabled = true;
+  try {
+    await editStations('DELETE', { id });
+    toast(`已取消关注 ${labelOf(station)}`);
+    afterStationsChange();
+  } catch (err) {
+    toast(err.message);
+    button.disabled = false;
+  }
+}
+
+$('live-cards').addEventListener('click', (event) => {
+  const button = event.target.closest('button.unfollow');
+  if (button) unfollow(button.dataset.id, button);
+});
+
 // --- search (live only, never recorded) -------------------------------------
+
+function renderResults() {
+  if (state.found.length === 0) return;
+  const tracked = new Set(state.stations.map((s) => String(s.id)));
+  $('results').innerHTML = `<table><thead><tr>
+      <th class="num">编号</th><th>城市</th><th>地址</th>
+      <th class="num">英里</th><th class="num">实时价</th><th class="num">关注</th></tr></thead><tbody>` +
+    state.found.map((r) => {
+      const on = tracked.has(String(r.id));
+      return `<tr>
+        <td class="num">${r.id}</td>
+        <td>${r.city}</td>
+        <td style="color:var(--muted)">${r.address}</td>
+        <td class="num">${r.distance_mi == null ? '—' : r.distance_mi.toFixed(1)}</td>
+        <td class="num"><button class="peek" data-id="${r.id}">查价</button></td>
+        <td class="num"><button class="${on ? 'unfollow-row' : 'follow'}" data-id="${r.id}">${on ? '已关注 ✓' : '关注'}</button></td>
+      </tr>`;
+    }).join('') + '</tbody></table>';
+}
 
 async function runSearch() {
   const zip = $('zip').value.trim();
@@ -112,24 +228,22 @@ async function runSearch() {
   try {
     const found = await getJSON(`${WORKER}/search?zip=${encodeURIComponent(zip)}&limit=8`);
     $('search-status').textContent = `${found.label} 附近`;
-    const tracked = new Set(state.stations.map((s) => String(s.id)));
-    $('results').innerHTML = `<table><thead><tr>
-        <th class="num">编号</th><th>城市</th><th>地址</th>
-        <th class="num">英里</th><th class="num">实时价</th></tr></thead><tbody>` +
-      found.results.map((r) => `<tr>
-          <td class="num">${r.id}</td>
-          <td>${r.city}${tracked.has(String(r.id)) ? ' <span style="color:var(--muted);font-size:11px">已跟踪</span>' : ''}</td>
-          <td style="color:var(--muted)">${r.address}</td>
-          <td class="num">${r.distance_mi == null ? '—' : r.distance_mi.toFixed(1)}</td>
-          <td class="num"><button class="peek" data-id="${r.id}">查价</button></td>
-        </tr>`).join('') + '</tbody></table>';
+    state.found = found.results || [];
+    if (state.found.length === 0) $('results').innerHTML = '<div class="empty">附近没有带加油站的 Costco</div>';
+    renderResults();
   } catch (err) {
+    state.found = [];
     $('search-status').textContent = '';
     $('results').innerHTML = `<div class="empty">${err.message}</div>`;
   }
 }
 
 $('results').addEventListener('click', async (event) => {
+  const followButton = event.target.closest('button.follow');
+  if (followButton) return follow(followButton.dataset.id, followButton);
+  const unfollowButton = event.target.closest('button.unfollow-row');
+  if (unfollowButton) return unfollow(unfollowButton.dataset.id, unfollowButton);
+
   const button = event.target.closest('button.peek');
   if (!button) return;
   const id = button.dataset.id;
@@ -281,11 +395,18 @@ $('refresh').addEventListener('click', async () => {
 });
 
 (async function start() {
+  // The Worker reads the list straight from the repo, so a follow made a
+  // minute ago shows up before Pages has redeployed. The same-origin file is
+  // the fallback when the Worker is down.
   try {
-    state.stations = (await getJSON('data/stations.json')).stations || [];
-  } catch (err) {
-    $('live-cards').innerHTML = `<div class="empty">站点清单读取失败：${err.message}</div>`;
-    return;
+    state.stations = (await getJSON(`${WORKER}/stations`)).stations || [];
+  } catch (_) {
+    try {
+      state.stations = (await getJSON('data/stations.json')).stations || [];
+    } catch (err) {
+      $('live-cards').innerHTML = `<div class="empty">站点清单读取失败：${err.message}</div>`;
+      return;
+    }
   }
   await loadHistory();
   await loadLive();
