@@ -62,8 +62,8 @@ function corsHeaders(req, env) {
   const origin = req.headers.get('Origin');
   return {
     'Access-Control-Allow-Origin': allowed.includes(origin) ? origin : allowed[0],
-    'Access-Control-Allow-Methods': 'GET,OPTIONS',
-    'Access-Control-Allow-Headers': 'content-type',
+    'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
+    'Access-Control-Allow-Headers': 'content-type,x-collect-key',
     Vary: 'Origin'
   };
 }
@@ -266,6 +266,53 @@ async function collect(env, at) {
   return { recorded, errors };
 }
 
+/** Clean one station record from the page; only these fields are stored. */
+function stationRecord(body) {
+  const id = Number(body && body.id);
+  if (!Number.isInteger(id) || id <= 0) throw new BadRequest('station id required');
+  const text = (v) => String(v ?? '').trim().slice(0, 80);
+  const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v))
+    ? null : Number(v));
+  return {
+    id,
+    city: text(body.city),
+    state: text(body.state).toUpperCase(),
+    address: text(body.address),
+    lat: num(body.lat),
+    lon: num(body.lon)
+  };
+}
+
+/** Add (station) or remove (removeId) one entry in stations.json. */
+async function editStations(env, { station, removeId }) {
+  const path = conf(env, 'STATIONS_PATH');
+  // The sha guards against a concurrent edit; GitHub answers 409 and we retry
+  // once against the fresh file.
+  for (let attempt = 0; ; attempt++) {
+    const { data, sha } = await ghRead(env, path);
+    const stations = (data && data.stations) || [];
+    const has = (id) => stations.some((s) => String(s.id) === String(id));
+    let message;
+    if (station) {
+      if (has(station.id)) return { stations, changed: false };
+      stations.push(station);
+      message = `track: #${station.id}${station.city ? ` ${station.city}` : ''}`;
+    } else {
+      if (!has(removeId)) return { stations, changed: false };
+      const gone = stations.find((s) => String(s.id) === String(removeId));
+      stations.splice(stations.indexOf(gone), 1);
+      message = `untrack: #${gone.id}${gone.city ? ` ${gone.city}` : ''}`;
+    }
+    try {
+      await ghWrite(env, path, { ...(data || {}), stations }, sha, message);
+      return { stations, changed: true };
+    } catch (err) {
+      if (attempt === 0 && /: 409 /.test(String(err.message))) continue;
+      throw err;
+    }
+  }
+}
+
 // --- handlers ---------------------------------------------------------------
 
 export default {
@@ -321,6 +368,33 @@ export default {
         );
       }
 
+      // The tracked list. GET is public and reads the repo directly, so the page
+      // sees an edit at once instead of waiting for Pages to redeploy.
+      // POST adds, DELETE removes; both need the same key as /collect.
+      if (url.pathname === '/stations') {
+        if (req.method === 'GET') {
+          const { data } = await ghRead(env, conf(env, 'STATIONS_PATH'));
+          return json({ stations: (data && data.stations) || [] },
+            { headers: { ...cors, 'Cache-Control': 'no-store' } });
+        }
+        if (req.method === 'POST' || req.method === 'DELETE') {
+          if (!env.COLLECT_KEY || req.headers.get('x-collect-key') !== env.COLLECT_KEY) {
+            return json({ error: 'forbidden' }, { status: 403, headers: cors });
+          }
+          let edit;
+          if (req.method === 'POST') {
+            let body;
+            try { body = await req.json(); } catch (_) { throw new BadRequest('JSON body required'); }
+            edit = { station: stationRecord(body) };
+          } else {
+            const id = Number(url.searchParams.get('id'));
+            if (!Number.isInteger(id) || id <= 0) throw new BadRequest('id required');
+            edit = { removeId: id };
+          }
+          return json(await editStations(env, edit), { headers: cors });
+        }
+      }
+
       // Manual trigger, for verifying the write path without waiting for cron.
       if (url.pathname === '/collect' && req.method === 'POST') {
         if (!env.COLLECT_KEY || req.headers.get('x-collect-key') !== env.COLLECT_KEY) {
@@ -329,7 +403,7 @@ export default {
         return json(await collect(env, new Date()), { headers: cors });
       }
 
-      return json({ error: 'not found', routes: ['/live', '/search', '/collect'] },
+      return json({ error: 'not found', routes: ['/live', '/search', '/stations', '/collect'] },
         { status: 404, headers: cors });
     } catch (err) {
       const status = err instanceof BadRequest ? 400 : 502;

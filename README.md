@@ -51,23 +51,22 @@ npx wrangler secret put COLLECT_KEY   # 随便一串，用来手动触发采集
 ```bash
 curl "$WORKER/live?ids=454"                                  # 应返回价格
 curl -X POST "$WORKER/collect" -H "x-collect-key: $KEY"      # 手动采一次
+curl "$WORKER/stations"                                      # 当前关注名单
 git pull && tail -20 data/history.json                       # 应看到新样本
 ```
 
-## 加一个跟踪的站
+## 关注 / 取消关注
 
 历史采集的名单是 `data/stations.json`。实时查询不受它限制——页面上搜邮编、点「查价」可以看任意 Costco，只是不记录。
 
-要把某个站加进历史采集：
+在页面上改名单：
 
-```bash
-npx wrangler dev --port 8788          # 另开一个终端
-curl "http://127.0.0.1:8788/search?zip=92618" | python3 -m json.tool
-# 把想要的那条 {id, city, state, address, lat, lon} 加进 data/stations.json
-git commit -am "track: #690 Laguna Niguel" && git push
-```
+- **关注**：搜邮编，结果表最后一列点「关注」。
+- **取消关注**：点实时价卡片右上角的 ×，或结果表里的「已关注 ✓」。已记录的历史保留，只是不再采样。
 
-下一次 cron 就会带上它。
+改名单会经 Worker 往仓库提交一次 `data/stations.json`（`track: …` / `untrack: …`），所以需要密钥：第一次点时页面会让你输入 Worker 的 `COLLECT_KEY`，之后记在这台浏览器的 localStorage 里；输错会清掉重来。页面启动时从 Worker 的 `GET /stations` 读名单（直接读仓库），不用等 Pages 重新部署。
+
+下一次 cron 就会带上新名单。也可以照旧手动编辑 `data/stations.json` 再 push。
 
 ## 数据格式
 
